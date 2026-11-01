@@ -7,124 +7,187 @@ sdk: gradio
 app_file: app.py
 pinned: false
 license: mit
-short_description: Assistente de produtividade com IA (tool calling, RAG, FastAPI)
+short_description: Assistente de produtividade com IA, Python e RAG
 ---
 
-# Lily Tasks — AI Productivity Assistant
+# 🪻 Lily Tasks — AI Productivity Assistant
 
-Assistente de produtividade em português que **conversa, executa ações reais** (tarefas, lembretes, rascunhos de
-e-mail) e **responde sobre documentos com fontes**. Projeto de portfólio para a trilha **AI Engineer**: o foco não é
-"chamar um LLM", e sim o que o cerca — validação, segurança, falhas, avaliação e honestidade sobre limites.
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)
+![AI Engineering](https://img.shields.io/badge/AI-Engineering-8B5CF6?style=flat)
+![LLM](https://img.shields.io/badge/LLM-Integration-6366F1?style=flat)
+![RAG](https://img.shields.io/badge/RAG-BM25-D946EF?style=flat)
+![License](https://img.shields.io/badge/License-MIT-22C55E?style=flat)
 
+## Sobre o projeto
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-REST_API-009688?style=for-the-badge&logo=fastapi&logoColor=white)
-![AI Engineering](https://img.shields.io/badge/AI-Engineering-8B5CF6?style=for-the-badge)
-![LLM](https://img.shields.io/badge/LLM-Integration-6366F1?style=for-the-badge)
-![RAG](https://img.shields.io/badge/RAG-Retrieval-D946EF?style=for-the-badge)
+A **Lily Tasks** é uma assistente virtual de produtividade desenvolvida em Python, com integração de inteligência artificial para ajudar na organização de tarefas, lembretes e informações.
 
-## Problema e solução
+O projeto foi criado com o objetivo de explorar, na prática, o desenvolvimento de aplicações com modelos de linguagem (LLMs), integrando funcionalidades de gerenciamento de tarefas, consultas a documentos e automação de ações.
 
-Assistentes de IA costumam falhar em três pontos: **inventam** (dizem que fizeram algo que não fizeram), **obedecem
-texto malicioso** escondido em documentos e **não têm como ser medidos**. A Lily trata o LLM como um componente
-não confiável dentro de uma arquitetura que impõe regras por código:
+Além da interação por chat, a aplicação possui uma interface visual para acompanhar as informações cadastradas.
 
-| Risco | Como é tratado |
-|---|---|
-| Parâmetros inventados pelo modelo | Validação estrita com Pydantic (`extra="forbid"`, enums); erro volta ao modelo |
-| Exclusão acidental ou induzida | Confirmação **fora do LLM** (botões/token de uso único, escopo por sessão) |
-| Prompt injection em documentos | Linhas suspeitas removidas + trechos marcados como dados + escrita bloqueada no turno |
-| "Notificação" falsa | Estados explícitos: *registrado* → *vencido, não notificado* → *notificado (in-app)* |
-| Resposta sem evidência | RAG com cobertura mínima; abstém-se e diz que não encontrou |
-| Falha/limite da API | Timeout, retries com backoff+jitter, mensagens claras, loop de ferramentas limitado |
-| Dados de um visitante vazarem para outro | Toda linha tem `session_id`; confirmações e IDs são por sessão |
-| Medir qualidade | 53 cenários reproduzíveis + intervalos de confiança ([EVALUATION.md](EVALUATION.md)) |
+O desenvolvimento também aborda conceitos importantes de engenharia de software, como organização de código, validação de dados, tratamento de erros e segurança.
 
 ## Funcionalidades
 
-- **Chat** em linguagem natural com *tool calling* real (Gemini) e histórico da sessão.
-- **Tarefas:** criar, listar (filtros), editar, concluir, excluir, prioridade e prazo.
-- **Lembretes:** datas relativas em português ("sexta 14h", "daqui a 2 horas") com **fuso configurável**.
-- **E-mails:** rascunhos editáveis (finalidade + tom). **Não existe código de envio.**
-- **RAG:** 5 documentos fictícios, BM25 em Python puro (CPU), respostas com fonte `arquivo › seção`.
-- **Painéis** de tarefas, lembretes, e-mails e atividade (ferramentas executadas), atualizados a cada ação.
-- **Dois modos:** *real* (Gemini) e *demonstração simulada* (regras, sem chave, rotulado em toda resposta).
+- **Chat com IA:** interação em português para interpretar solicitações e executar ações.
+- **Gerenciamento de tarefas:** criação, consulta, edição, conclusão e exclusão de tarefas.
+- **Lembretes:** cadastro de lembretes com datas e horários, incluindo expressões como "amanhã às 14h".
+- **Rascunhos de e-mail:** geração de textos que podem ser revisados e copiados pelo usuário, sem envio automático.
+- **Consulta a documentos (RAG):** busca de informações em documentos de exemplo, com indicação das fontes utilizadas.
+- **Painel de produtividade:** visualização de tarefas, lembretes e outras informações.
+- **Modo demonstração:** permite explorar funcionalidades básicas sem configurar uma chave de API.
 
-## Tecnologias
+## Tecnologias utilizadas
 
-Python 3.11+ · FastAPI · Pydantic v2 · SDK oficial `google-genai` · SQLite · Gradio · Pytest · Ruff · GitHub Actions.
-Sem GPU, sem banco externo, sem frameworks de agentes. Cabe em ~6 GB de RAM.
-
-## Decisões técnicas (resumo)
-
-1. **Interface `LLMClient` neutra** — o agente não conhece o SDK; os testes usam um LLM falso determinístico.
-2. **Datas resolvidas no servidor**, não pelo modelo (LLMs erram "próxima sexta"); o modelo só repassa a frase.
-3. **BM25 em vez de embeddings** — explicável, leve, sem download de modelo; limitação conhecida: sem sinônimos.
-4. **Confirmação fora do LLM** — um modelo (ou um documento) convencido a apagar não consegue apagar.
-5. **Isolamento por `session_id`** + numeração por sessão (#1, #2…) + TTL que apaga sessões inativas.
-6. **Logs só com metadados** (ferramenta, status) e redação de chaves; o conteúdo das conversas não é logado.
-
-Detalhes e diagramas: [ARCHITECTURE.md](ARCHITECTURE.md) · segurança: [SECURITY.md](SECURITY.md).
-
-## Resultados verificáveis
-
-Medidos por `python -m evals.run_eval --mode deterministic` (53 cenários, execução reproduzível):
-
-| Métrica | Resultado | IC 95% |
-|---|---|---|
-| Cenários aprovados | 51/53 (96,2%) | 87%–99% |
-| Seleção de ferramenta | 52/53 (98,1%) | 90%–100% |
-| Extração de argumentos | 25/25 | 87%–100% |
-| RAG fonte correta (top-3) / abstenção correta | 8/8 · 3/3 | — |
-
-As 2 falhas são **casos difíceis deixados de propósito** (mostram os limites das regras e do BM25). **Leia a ressalva:**
-esse modo avalia o *roteador de regras do modo demo*, e os cenários foram escritos pela mesma pessoa que escreveu as
-regras — é um teste de regressão, **não** uma estimativa de generalização. A métrica que importa para o modelo real é
-`--mode llm` (precisa da sua chave; **ainda não foi executada**). Veja [EVALUATION.md](EVALUATION.md).
-
-### Estado de validação desta entrega
-
-| Item | Situação |
+| Tecnologia | Aplicação no projeto |
 |---|---|
-| Datas, SQLite, serviços, RAG, guarda anti-injection, roteador, avaliação | **Executados** (37 testes passaram) |
-| Ferramentas e agente (loop, confirmação, bloqueio, rate limit, erros do LLM) | **Executados** (18 testes), mas com um *stub* mínimo no lugar do `pydantic` — rode com o pydantic real |
-| Lógica do Static Space (JS) | **Executada** em Node (datas, roteador, RAG, remoção de injeção) |
-| API FastAPI, esquema Pydantic→Gemini, `pytest`, `ruff`, CI | **Escritos, não executados** (sem rede no ambiente de desenvolvimento) |
-| Interface Gradio, chamadas reais ao Gemini, deploy no Hugging Face, Windows 11 | **Não testados** — siga o passo a passo e reporte erros |
+| Python | Linguagem principal |
+| FastAPI | Desenvolvimento da API |
+| Gradio | Interface web interativa |
+| Gemini API | Integração com modelo de linguagem |
+| Pydantic | Validação de dados |
+| SQLite | Armazenamento local |
+| BM25 | Busca de informações nos documentos |
+| Pytest | Testes automatizados |
+| Ruff | Análise e padronização do código |
+| Git e GitHub | Versionamento do projeto |
 
-## Como executar (Windows 11 — PowerShell)
+## Como a Lily funciona
+
+A aplicação recebe uma solicitação do usuário e identifica como ela deve ser processada.
+
+Dependendo do pedido, a Lily pode consultar informações, utilizar ferramentas internas ou realizar operações relacionadas às tarefas e aos lembretes.
+
+**Fluxo simplificado:**
+
+1. O usuário envia uma mensagem pela interface.
+2. A aplicação interpreta a solicitação com auxílio do modelo de linguagem ou das regras do modo demonstração.
+3. Quando necessário, uma ferramenta interna executa a operação.
+4. As informações são consultadas ou armazenadas no banco de dados.
+5. A Lily apresenta o resultado ao usuário.
+
+Para perguntas sobre documentos, o projeto utiliza **RAG (Retrieval-Augmented Generation)**, uma técnica que permite recuperar informações de uma base de documentos para auxiliar na elaboração de respostas.
+
+A busca utiliza o algoritmo BM25, que identifica trechos relevantes com base nos termos da consulta.
+
+## Organização do projeto
+
+O código foi dividido em módulos para facilitar a manutenção e a compreensão das responsabilidades de cada componente.
+
+```text
+lily-tasks/
+├── app.py
+├── lily/
+│   ├── llm/
+│   ├── rag/
+│   └── services/
+├── data/
+│   └── docs/
+├── evals/
+├── tests/
+├── docs/
+├── requirements.txt
+├── requirements-dev.txt
+└── README.md
+```
+
+- **lily/** — lógica principal da aplicação.
+- **llm/** — comunicação com o modelo de linguagem.
+- **rag/** — recuperação de informações em documentos.
+- **services/** — operações relacionadas às funcionalidades.
+- **data/docs/** — documentos fictícios utilizados nas consultas.
+- **evals/** — cenários para avaliação de comportamentos.
+- **tests/** — testes automatizados.
+- **docs/** — documentação complementar.
+
+## Como executar localmente
+
+### Pré-requisitos
+
+- Python compatível com as dependências do projeto.
+- Git.
+- Chave da API do Gemini para utilizar o modo com LLM.
+
+### Instalação
+
+**1. Clone o repositório:**
+
+```bash
+git clone https://github.com/SEU-USUARIO/lily-tasks.git
+cd lily-tasks
+```
+
+**2. Crie um ambiente virtual:**
 
 ```powershell
 py -3.12 -m venv .venv
+```
+
+**3. Ative o ambiente virtual no PowerShell:**
+
+```powershell
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
-copy .env.example .env        # opcional: cole sua GEMINI_API_KEY (modo real)
-python app.py                 # interface em http://127.0.0.1:7860
-pytest                        # testes
-ruff check .                  # lint
-python -m evals.run_eval --mode deterministic
-uvicorn lily.api:create_app --factory --reload   # API em http://127.0.0.1:8000/docs
 ```
 
-Sem `GEMINI_API_KEY` o app abre em **modo demonstração simulada**. Passo a passo completo (GitHub, Hugging Face,
-LinkedIn): [docs/TUTORIAL_WINDOWS.md](docs/TUTORIAL_WINDOWS.md). Estudo e entrevista: [docs/GUIA_DE_ESTUDO.md](docs/GUIA_DE_ESTUDO.md).
+**4. Instale as dependências:**
 
-## Estrutura
-
-```
-app.py                  entrada do Space/local (Gradio)        static_space/   demo 100% navegador
-lily/ config · db · dates · text · planner(demo) · tools · agent · runtime · api · ui · render · theme
-lily/services/          tasks · reminders · emails              lily/rag/       index (BM25) · guard
-lily/llm/               base · gemini · retry                   data/docs/      documentos FICTÍCIOS
-evals/                  scenarios.json · run_eval.py            tests/          67 testes
+```powershell
+python -m pip install -r requirements.txt
 ```
 
-## Limitações conhecidas
+**5. Inicie a aplicação:**
 
-- Lembretes só notificam com o app aberto (não há scheduler/push/e-mail) — por design e sinalizado na interface.
-- BM25 não entende sinônimos ("bolsa de estudos" não acha "bolsa de 50% em cursos").
-- Numa camada gratuita do Gemini, o Google pode usar os dados enviados para melhorar produtos (confira os termos
-  atuais): **não use dados reais sensíveis** no modo real.
-- O modo demo entende frases comuns; frases fora do padrão caem em esclarecimento.
+```powershell
+python app.py
+```
 
-Licença MIT. Todos os documentos em `data/docs/` são fictícios.
+A interface local utiliza o endereço:
+
+http://127.0.0.1:7860
+
+### Configuração da IA
+
+Para utilizar a integração com Gemini, crie um arquivo `.env` a partir do `.env.example` e configure a variável:
+
+```env
+GEMINI_API_KEY=sua_chave_aqui
+```
+
+Sem a chave, a aplicação oferece um modo de demonstração baseado em regras.
+
+## Cuidados e limitações
+
+A Lily Tasks é um projeto demonstrativo, desenvolvido para estudo e aplicação prática de conceitos de inteligência artificial e engenharia de software.
+
+Algumas características importantes:
+
+- Os documentos utilizados na demonstração são fictícios.
+- Os rascunhos de e-mail não são enviados automaticamente.
+- Os lembretes não utilizam notificações externas ou push.
+- A busca BM25 depende da correspondência entre os termos da consulta e os documentos.
+- Ações sensíveis, como exclusões, utilizam mecanismos de confirmação.
+
+O projeto também inclui documentação sobre arquitetura e segurança:
+
+- [Arquitetura](ARCHITECTURE.md)
+- [Segurança](SECURITY.md)
+- [Guia de execução no Windows](docs/TUTORIAL_WINDOWS.md)
+
+## Aprendizados
+
+O desenvolvimento da Lily Tasks permite aplicar e aprofundar conhecimentos em:
+
+- Integração de APIs e modelos de linguagem.
+- Desenvolvimento de aplicações com Python.
+- Organização de projetos em módulos.
+- Manipulação e persistência de dados.
+- Recuperação de informações com RAG.
+- Validação de entradas e tratamento de erros.
+- Desenvolvimento de interfaces e APIs.
+- Versionamento e documentação de software.
+
+## Licença
+
+Este projeto está disponível sob a [Licença MIT](LICENSE).
