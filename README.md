@@ -16,7 +16,12 @@ Assistente de produtividade em português que **conversa, executa ações reais*
 e-mail) e **responde sobre documentos com fontes**. Projeto de portfólio para a trilha **AI Engineer**: o foco não é
 "chamar um LLM", e sim o que o cerca — validação, segurança, falhas, avaliação e honestidade sobre limites.
 
-> **Demonstração:** [Gradio Space](https://huggingface.co/spaces/SEU-USUARIO/lily-tasks) · [Demo estática](https://huggingface.co/spaces/SEU-USUARIO/lily-tasks-static) _(troque `SEU-USUARIO` após publicar; veja [DEPLOYMENT.md](DEPLOYMENT.md))_
+
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-REST_API-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![AI Engineering](https://img.shields.io/badge/AI-Engineering-8B5CF6?style=for-the-badge)
+![LLM](https://img.shields.io/badge/LLM-Integration-6366F1?style=for-the-badge)
+![RAG](https://img.shields.io/badge/RAG-Retrieval-D946EF?style=for-the-badge)
 
 ## Problema e solução
 
