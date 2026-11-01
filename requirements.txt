@@ -1,0 +1,4 @@
+# Dependências do Hugging Face Space (Gradio já vem com o SDK do Space).
+pydantic>=2.6
+google-genai>=1.0
+tzdata
