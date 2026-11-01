@@ -115,7 +115,7 @@ lily-tasks/
 **1. Clone o repositório:**
 
 ```bash
-git clone https://github.com/SEU-USUARIO/lily-tasks.git
+git clone https://github.com/SimoesBia/lily-tasks.git
 cd lily-tasks
 ```
 
