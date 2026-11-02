@@ -30,6 +30,22 @@ CSS = """
 .lily-meta{font-size:12px;color:var(--muted)}
 .lily-due{font-size:13px;color:var(--l-800);white-space:nowrap;font-weight:500}
 .lily-due.late{color:var(--rose);font-weight:600}
+/* Força contraste no HTML renderizado dentro de temas escuros do Gradio.
+   Alguns estilos globais do tema aplicam cor clara a spans descendentes. */
+.gradio-container .lily-list, .gradio-container .lily-row,
+.gradio-container .lily-row .lily-main, .gradio-container .lily-row .lily-title {
+  color:#26233A !important;
+}
+.gradio-container .lily-row .lily-meta, .gradio-container .lily-empty {
+  color:#6B6880 !important;
+}
+.gradio-container .lily-row .lily-due, .gradio-container .lily-note {
+  color:#3F2F8F !important;
+}
+.gradio-container .lily-row .lily-due.late {color:#B8405F !important}
+.gradio-container .lily-row .lily-chip.chip-reg {color:#3F2F8F !important}
+.gradio-container .lily-row .lily-chip.chip-ok {color:#1B6B55 !important}
+.gradio-container .lily-row .lily-chip.chip-due {color:#B8405F !important}
 .lily-row.done .lily-title{text-decoration:line-through;color:var(--muted)}
 .lily-chip{font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;white-space:nowrap}
 .chip-reg{background:var(--l-100);color:var(--l-800)} .chip-ok{background:var(--m-100);color:var(--m-800)}

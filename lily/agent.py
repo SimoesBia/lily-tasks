@@ -76,12 +76,34 @@ class ChatResult:
 
 class Agent:
     MAX_HISTORY = 24
+    PENDING_TTL_S = 600  # uma pergunta de esclarecimento "vale" por 10 minutos
 
     def __init__(self, settings: Settings, db: Database, registry: ToolRegistry, clock) -> None:
         self.settings, self.db, self.registry, self.clock = settings, db, registry, clock
         self.limiter = RateLimiter(settings.rate_limit_per_min)
         self._convos: collections.OrderedDict[str, list[dict]] = collections.OrderedDict()
+        self._pending_ops: collections.OrderedDict[str, tuple] = collections.OrderedDict()
         self._lock = threading.Lock()
+
+    # ---- operação pendente do modo demo (por sessão, com validade) --------------------------
+    def _take_pending_op(self, sid: str):
+        """Retira a pendência da sessão (a pergunta só vale para a PRÓXIMA mensagem)."""
+        with self._lock:
+            item = self._pending_ops.pop(sid, None)
+        if item is None:
+            return None
+        op, stamped = item
+        return op if (self.clock() - stamped).total_seconds() <= self.PENDING_TTL_S else None
+
+    def _put_pending_op(self, sid: str, op) -> None:
+        with self._lock:
+            if op is None:
+                self._pending_ops.pop(sid, None)
+                return
+            self._pending_ops[sid] = (op, self.clock())
+            self._pending_ops.move_to_end(sid)
+            while len(self._pending_ops) > 500:
+                self._pending_ops.popitem(last=False)
 
     # ---- histórico em memória (neutro) ---------------------------------------------------
     def _convo(self, sid: str) -> list[dict]:
@@ -109,7 +131,11 @@ class Agent:
                             f"Mensagem longa demais (máx. {self.settings.max_message_chars} caracteres).")  # fmt: skip
         self.limiter.check(sid)
         self.db.add_message(sid, "user", message)
-        result = self._run_llm(sid, message, llm) if llm else self._run_demo(sid, message)
+        if llm:
+            self._put_pending_op(sid, None)  # pendências são do modo demo; o Gemini mantém o próprio contexto
+            result = self._run_llm(sid, message, llm)
+        else:
+            result = self._run_demo(sid, message)
         self.db.add_message(sid, "assistant", result.reply)
         return result
 
@@ -128,7 +154,8 @@ class Agent:
 
     # ---- modo demonstração ----------------------------------------------------------------
     def _run_demo(self, sid: str, message: str) -> ChatResult:
-        plan = demo_plan(message)
+        plan = demo_plan(message, pending=self._take_pending_op(sid))
+        self._put_pending_op(sid, plan.pending)
         if plan.kind in ("help", "clarify"):
             return ChatResult(DEMO_PREFIX + (plan.text or ""), "demo")
         ctx = ToolContext(sid)
@@ -143,6 +170,10 @@ class Agent:
                 parts.append(res.get("display") or res.get("summary", "Feito."))
             else:
                 parts.append(self._friendly_error(res))
+                if plan.on_fail and res.get("error") in ("ambiguous", "not_found"):
+                    plan.on_fail.ref = None  # não achou/ficou ambíguo: espera o usuário dizer QUAL
+                    self._put_pending_op(sid, plan.on_fail)
+                    parts.append(f"Responda com o número da {plan.on_fail.target}.")
         return ChatResult(DEMO_PREFIX + "\n\n".join(parts), "demo", events, pending)
 
     # ---- modo real ------------------------------------------------------------------------

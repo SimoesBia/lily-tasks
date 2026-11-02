@@ -1,5 +1,5 @@
 # Resultado da avaliação — modo `deterministic`
-_Gerado em 2026-11-01T04:08:50+00:00. Cenários: 53._
+_Gerado em 2026-11-01T18:16:51-03:00. Cenários: 53._
 
 | Métrica | Acertos | Taxa | IC 95% (Wilson) |
 |---|---|---|---|

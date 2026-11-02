@@ -15,10 +15,23 @@ from .text import fold
 
 
 @dataclass
+class PendingOp:
+    """Operação que aguarda uma resposta curta do usuário (ex.: 'qual tarefa?')."""
+
+    kind: str  # "update" | "complete" | "delete"
+    target: str  # "tarefa" | "lembrete"
+    ref: str | None = None  # número ou trecho do nome; None = ainda não informado
+    fields: dict = field(default_factory=dict)  # campos já conhecidos (priority, due, title, when, text…)
+    field_hint: str | None = None  # campo citado sem valor ("prioridade" -> priority)
+
+
+@dataclass
 class Plan:
     kind: str  # "tool" | "clarify" | "help"
     calls: list[dict] = field(default_factory=list)
     text: str | None = None
+    pending: PendingOp | None = None  # a guardar na sessão (None = nada pendente)
+    on_fail: PendingOp | None = None  # a guardar se a ferramenta não achar/desambiguar o item
 
 
 HELP = (
@@ -133,11 +146,16 @@ def _kind(f: str) -> str | None:
     return None
 
 
-def plan(message: str) -> Plan:
+def plan(message: str, pending: PendingOp | None = None) -> Plan:
     orig = " ".join(message.split())
     f = fold(orig)
     if not f:
         return Plan("clarify", text=CLARIFY_GENERIC)
+    if pending is not None:
+        continued = _continue_pending(pending, orig, f)
+        if continued is not None:
+            return continued
+        # não era resposta à pergunta: a pendência é descartada e a frase é roteada como nova
     if re.match(r"^(oi|ola|bom dia|boa tarde|boa noite|e ai|hey|hello|ajuda|help)\b[\s!.?]*$", f):
         return Plan("help", text="Olá! " + HELP)
 
@@ -164,25 +182,21 @@ def plan(message: str) -> Plan:
 
 # ---- handlers ---------------------------------------------------------------------------
 def _plan_delete(orig: str, f: str) -> Plan:
+    if re.search(r"\b(?:remov\w+|tir\w+|apag\w+|exclu\w+|elimin\w+)\s+(?:o\s+|a\s+)?(?:prazo|prioridade|data)\b", f):
+        return _plan_update(orig, f)  # tirar um CAMPO do item não é excluir o item
     kind = _kind(f)
     if re.search(r"\b(tod[oa]s|tudo)\b", f):
         return Plan("clarify", text="Por segurança, não excluo itens em massa. Diga qual item (número ou título).")
     if not kind:
         return Plan("clarify", text="O que você quer excluir: uma tarefa ou um lembrete? Informe também o número ou título.")
     ref = _ref(orig, kind)
-    if not ref:
-        return Plan("clarify", text=f"Qual {kind} devo excluir? Informe o número ou o título.")
-    tool, key = ("delete_task", "task") if kind == "tarefa" else ("delete_reminder", "reminder")
-    return Plan("tool", [{"name": tool, "args": {key: ref}}])
+    return _advance(PendingOp("delete", kind, ref))
 
 
 def _plan_complete(orig: str, f: str) -> Plan | None:
     if _kind(f) != "tarefa":
-        return Plan("clarify", text="Qual tarefa devo concluir? Informe o número ou o título.")
-    ref = _ref(orig, "tarefa")
-    if not ref:
-        return Plan("clarify", text="Qual tarefa devo concluir? Informe o número ou o título.")
-    return Plan("tool", [{"name": "complete_task", "args": {"task": ref}}])
+        return _advance(PendingOp("complete", "tarefa"))
+    return _advance(PendingOp("complete", "tarefa", _ref(orig, "tarefa")))
 
 
 def _plan_list(orig: str, f: str) -> Plan | None:
@@ -204,6 +218,14 @@ def _plan_list(orig: str, f: str) -> Plan | None:
 
 
 def _plan_task(orig: str, f: str) -> Plan:
+    ref_only = re.fullmatch(r"(?:a\s+|o\s+)?tarefa\s*(?:n[o°º]?\.?\s*|numero\s*)?#?(\d+)", f.strip(" .!?"))
+    if ref_only:  # "tarefa 1" / "a tarefa 3" sem contexto: não é um título de tarefa
+        n = ref_only.group(1)
+        return Plan(
+            "clarify",
+            text=f"Não entendi “{orig}”. Você quer concluir, editar ou excluir a tarefa {n}? "
+            f"Diga, por exemplo: “concluir tarefa {n}”.",
+        )
     text, prio = _extract_priority(orig)
     text, when = split_when(text)
     text = re.sub(
@@ -217,6 +239,12 @@ def _plan_task(orig: str, f: str) -> Plan:
     title = _capitalize(_clean(text))
     if not title:
         return Plan("clarify", text="Qual é o título da tarefa?")
+    if re.fullmatch(r"#?\d+", title):  # "tarefa 1" sem contexto não é uma tarefa chamada "1"
+        return Plan(
+            "clarify",
+            text=f"Não entendi “{orig}”. Você quer concluir, editar ou excluir a tarefa {title.lstrip('#')}? "
+            f"Diga, por exemplo: “concluir tarefa {title.lstrip('#')}”.",
+        )
     args: dict = {"title": title}
     if when:
         args["due"] = when
@@ -241,43 +269,176 @@ def _plan_reminder(orig: str, f: str) -> Plan:
     return Plan("tool", [{"name": "create_reminder", "args": {"text": title, "when": when}}])
 
 
-def _plan_update(orig: str, f: str) -> Plan | None:
-    kind = _kind(f)
-    if not kind:
-        return Plan("clarify", text="O que você quer alterar: uma tarefa ou um lembrete? Informe o número.")
-    m = re.search(rf"\b{kind}s?\s*(?:n[o°º]?\.?\s*)?#?(\d+)\b", f) or re.search(r"#(\d+)", f)
-    if not m:
-        return Plan("clarify", text=f"Qual {kind} devo alterar? Informe o número (ex.: {kind} 2).")
-    ref = m.group(1)
-    rest = orig[: m.start()] + " " + orig[m.end() :]
-    rest, prio = _extract_priority(rest)
-    quoted = re.search(r"[\"“'‘](.+?)[\"”'’]", rest)
-    new_title = quoted.group(1).strip() if quoted else None
+# ---- edição e operações pendentes ---------------------------------------------------------
+_PRIO_WORDS = {"alta": "alta", "urgente": "alta", "media": "media", "medio": "media", "normal": "media", "baixa": "baixa"}
+_PRIO_WORD_RX = re.compile(r"\b(alta|urgente|media|medio|normal|baixa)\b")
+_NUM_ONLY = re.compile(r"^(?:a\s+|o\s+|da\s+|de\s+)?(?:(?:tarefa|lembrete)\s*)?(?:n[o°º]?\.?\s*|numero\s*)?#?(\d+)$")
+_ABORT = {"cancelar", "cancela", "deixa", "deixa pra la", "deixa para la", "deixa quieto", "esquece",
+          "esqueca", "nao", "nada", "nao quero"}  # fmt: skip
+_COMMAND_VERB = re.compile(
+    r"\b(cri\w+|adicion\w+|anot\w+|cadastr\w+|inclu\w+|apag\w+|exclu\w+|delet\w+|remov\w+|cancel\w+|list\w+|"
+    r"mostr\w+|exib\w+|conclu\w+|finaliz\w+|termin\w+|complet\w+|edit\w+|alter\w+|mud\w+|renome\w+|"
+    r"atualiz\w+|troc\w+|me\s+lembr\w+|lembre-?me|escrev\w+|quais|preciso|tenho que)\b"
+)  # fmt: skip
+_ASK = {
+    "priority": "Qual a nova prioridade: baixa, média ou alta?",
+    "due": "Para quando devo mudar o prazo? Ex.: sexta, amanhã às 9h ou “sem prazo”.",
+    "title": "Qual o novo título?",
+    "when": "Para qual horário devo mover o lembrete? Ex.: amanhã às 9h.",
+    "text": "Qual o novo texto do lembrete?",
+}
+_TOOL = {
+    ("update", "tarefa"): ("update_task", "task"),
+    ("update", "lembrete"): ("update_reminder", "reminder"),
+    ("complete", "tarefa"): ("complete_task", "task"),
+    ("delete", "tarefa"): ("delete_task", "task"),
+    ("delete", "lembrete"): ("delete_reminder", "reminder"),
+}
+_VERB_INF = {"update": "alterar", "complete": "concluir", "delete": "excluir"}
+
+
+def _field_name(target: str, word: str) -> str | None:
+    base = {"prioridade": "priority", "prazo": "due", "data": "due", "vencimento": "due", "horario": "due",
+            "hora": "due", "titulo": "title", "nome": "title", "texto": "title"}.get(word)  # fmt: skip
+    if base is None:
+        return None
+    if target == "lembrete":  # lembretes não têm prioridade nem título: têm horário e texto
+        return {"due": "when", "title": "text"}.get(base)
+    return base
+
+
+def _hint(target: str, f: str) -> str | None:
+    for word in ("prioridade", "prazo", "vencimento", "data", "horario", "hora", "titulo", "nome", "texto"):
+        if re.search(rf"\b{word}\b", f):
+            hint = _field_name(target, word)
+            if hint:
+                return hint
+    return None
+
+
+def _parse_fields(target: str, text: str, hint: str | None = None, value: str | None = None) -> dict:
+    """Extrai campos e valores novos. `value` = trecho que veio depois de 'para' (ou a resposta inteira)."""
+    fields: dict = {}
+    quoted = re.search(r"[\"“'‘](.+?)[\"”'’]", text)
     if quoted:
-        rest = rest[: quoted.start()] + " " + rest[quoted.end() :]
-    clear = bool(re.search(r"\b(remova|tire|sem)\s+(?:o\s+)?prazo\b", fold(rest))) if kind == "tarefa" else False
-    _, when = split_when(rest)
-    if kind == "tarefa":
-        args: dict = {"task": ref}
-        if new_title:
-            args["title"] = new_title
-        if prio:
-            args["priority"] = prio
-        if clear:
-            args["clear_due"] = True
-        elif when:
-            args["due"] = when
-        if len(args) == 1:
-            return Plan("clarify", text="O que devo alterar na tarefa: título, prazo ou prioridade?")
-        return Plan("tool", [{"name": "update_task", "args": args}])
-    args = {"reminder": ref}
-    if new_title:
-        args["text"] = new_title
-    if when:
-        args["when"] = when
-    if len(args) == 1:
-        return Plan("clarify", text="O que devo alterar no lembrete: o texto ou o horário?")
-    return Plan("tool", [{"name": "update_reminder", "args": args}])
+        fields["title" if target == "tarefa" else "text"] = quoted.group(1).strip()
+        text = text[: quoted.start()] + " " + text[quoted.end() :]
+    f = fold(text)
+    if target == "tarefa":
+        if re.search(r"\b(?:remov\w+|tire|tirar|sem)\s+(?:o\s+)?prazo\b", f):
+            fields["clear_due"] = True
+        found = list(_PRIO_WORD_RX.finditer(f))
+        if found:
+            solo = value is not None and re.fullmatch(
+                r"\W*(?:(?:para|como|em|a)\s+)?(?:prioridade\s+)?(?:alta|urgente|media|medio|normal|baixa)\W*",
+                fold(value),
+            )
+            if hint == "priority" or re.search(r"\bprioridade\b", f) or solo:
+                fields["priority"] = _PRIO_WORDS[found[-1].group(1)]
+    if not fields.get("clear_due"):
+        _, when = split_when(text)
+        if when:
+            fields["due" if target == "tarefa" else "when"] = when
+    return fields
+
+
+def _split_name_value(target: str, tail: str, free_value: bool) -> tuple[str, str]:
+    """Separa 'Estudar Python para média' em (nome, valor). Usa o ÚLTIMO 'para' que introduz um valor."""
+    ft = fold(tail)
+    for m in reversed(list(re.finditer(r"\s(?:para|pra)\s", ft))):
+        name, value = tail[: m.start()], tail[m.end() :]
+        if _parse_fields(target, value, value=value) or (free_value and value.strip()):
+            return name, value
+    m = re.search(r"\s(?:com\s+|de\s+|em\s+)?(?:prioridade|prazo)\b", ft)
+    if m:
+        return tail[: m.start()], tail[m.start() :]
+    return tail, ""
+
+
+def _split_ref(orig: str, f: str, target: str) -> tuple[str | None, str, str]:
+    """Acha o item (número ou nome) e devolve (ref, texto antes, texto com o valor novo)."""
+    m = re.search(rf"\b{target}s?\s*(?:n[o°º]?\.?\s*|numero\s*)?#?(\d+)\b", f) or re.search(r"#(\d+)", f)
+    if m:
+        return m.group(1), orig[: m.start()], orig[m.end() :]
+    m = re.search(rf"\b{target}s?\b", f)
+    if not m:
+        return None, orig, ""
+    head, tail = orig[: m.start()], orig[m.end() :]
+    name, value = _split_name_value(target, tail, bool(re.search(r"\brenome\w+", f)))
+    return (_clean(name) or None), head, value
+
+
+def _advance(op: PendingOp) -> Plan:
+    """Decide o próximo passo: perguntar o que falta (guardando a pendência) ou executar a ferramenta."""
+    if not op.ref:
+        return Plan(
+            "clarify",
+            text=f"Qual {op.target} devo {_VERB_INF[op.kind]}? Informe o número ou o nome (ex.: {op.target} 2).",
+            pending=op,
+        )
+    label = f"#{op.ref}" if op.ref.isdigit() else f"“{op.ref}”"
+    if op.kind == "update" and not op.fields:
+        if op.field_hint:
+            return Plan("clarify", text=_ASK[op.field_hint], pending=op)
+        what = "título, prazo ou prioridade" if op.target == "tarefa" else "o texto ou o horário"
+        return Plan("clarify", text=f"O que devo alterar na {op.target} {label}: {what}?", pending=op)
+    tool, key = _TOOL[(op.kind, op.target)]
+    args = {key: op.ref, **op.fields} if op.kind == "update" else {key: op.ref}
+    return Plan("tool", [{"name": tool, "args": args}], on_fail=op)
+
+
+def _continue_pending(op: PendingOp, orig: str, f: str) -> Plan | None:
+    """Interpreta uma resposta curta como continuação de `op`. None = não é resposta (rotear como nova frase)."""
+    bare = f.strip(" .!?,;:")
+    if not bare:
+        return None
+    if bare in _ABORT:
+        return Plan("clarify", text="Certo, cancelei essa operação. Nada foi alterado.")
+    if op.ref is None:  # faltava QUAL item
+        m = _NUM_ONLY.match(bare)
+        if m:
+            op.ref = m.group(1)
+            return _advance(op)
+        if re.match(rf"^(?:a\s+|o\s+)?{op.target}s?\b", bare):  # "tarefa 1", "tarefa Estudar Python para alta"
+            ref, head, value = _split_ref(orig, f, op.target)
+            if not ref:
+                return None
+            op.ref = ref
+            op.fields.update(_parse_fields(op.target, f"{head} {value}", value=value))
+            return _advance(op)
+        if len(bare.split()) <= 6 and not _COMMAND_VERB.search(bare) and not _QUESTION_START.match(bare):
+            op.ref = _clean(orig) or None  # "Estudar Python"
+            return _advance(op) if op.ref else None
+        return None
+    if op.kind == "update" and not op.fields:  # faltava O QUE alterar / o valor novo
+        if _COMMAND_VERB.search(bare):
+            return None
+        new = _parse_fields(op.target, orig, hint=op.field_hint, value=orig)
+        if new:
+            op.fields, op.field_hint = new, None
+            return _advance(op)
+        named = _field_name(op.target, re.sub(r"^(?:a|o|do|da|de)\s+", "", bare))
+        if named:
+            op.field_hint = named
+            return _advance(op)
+        if op.field_hint in ("title", "text") and len(orig) <= 150:
+            op.fields, op.field_hint = {op.field_hint: _clean(orig)}, None
+            return _advance(op)
+    return None
+
+
+def _plan_update(orig: str, f: str) -> Plan | None:
+    target = _kind(f)
+    if not target:
+        return Plan("clarify", text="O que você quer alterar: uma tarefa ou um lembrete? Informe também o número ou o nome.")
+    ref, head, value = _split_ref(orig, f, target)
+    fields = _parse_fields(target, f"{head} {value}", value=value)
+    if not fields and re.search(r"\brenome\w+", f):  # "renomeie a tarefa 4 para Enviar proposta" (sem aspas)
+        free = _clean(re.sub(r"^\s*(?:para|pra)\s+", "", value, flags=re.I))
+        if free:
+            fields["title" if target == "tarefa" else "text"] = free
+    hint = None if fields else _hint(target, fold(f"{head} {value}"))
+    return _advance(PendingOp("update", target, ref, fields, hint))
 
 
 def _plan_email(orig: str, f: str) -> Plan:
